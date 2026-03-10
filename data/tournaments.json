@@ -1,0 +1,60 @@
+{
+  "tournaments": [
+    {
+      "id": "tzho8x9zmml80ooa",
+      "name": "spring tournament",
+      "description": "kajhsdkjad",
+      "location": "online",
+      "format": "swiss",
+      "rounds": 7,
+      "minutes": 5,
+      "increment": 2,
+      "timeControl": "5+2",
+      "startDate": "2026-03-11T05:20",
+      "registrationDeadline": "2026-03-10T20:00",
+      "maxPlayers": 32,
+      "section": "Students",
+      "rated": false,
+      "entryFee": 0,
+      "status": "ongoing",
+      "players": [],
+      "standings": [],
+      "pairings": [],
+      "createdAt": "2026-03-10T23:08:00.106Z",
+      "updatedAt": "2026-03-10T23:09:02.226Z"
+    },
+    {
+      "id": "4ng9g5ermml7y847",
+      "name": "Spring Student Blitz",
+      "description": "Fast student event with medals and certificates.",
+      "location": "PlayChess Hall",
+      "format": "swiss",
+      "rounds": 5,
+      "minutes": 3,
+      "increment": 2,
+      "timeControl": "3+2",
+      "startDate": "2026-04-15T10:00",
+      "registrationDeadline": "2026-04-14T20:00",
+      "maxPlayers": 32,
+      "section": "Students U14",
+      "rated": false,
+      "entryFee": 10,
+      "status": "open",
+      "players": [
+        {
+          "id": "ngz3dzbgmml81qa9",
+          "playerName": "Giorgi Kostava",
+          "school": "asdj",
+          "grade": "5",
+          "rating": 1600,
+          "parentName": "askdjhaksdj",
+          "parentPhone": "599922",
+          "parentEmail": "gkasdm@mgail.com",
+          "registeredAt": "2026-03-10T23:08:48.849Z"
+        }
+      ],
+      "createdAt": "2026-03-10T23:06:05.335Z",
+      "updatedAt": "2026-03-10T23:08:48.849Z"
+    }
+  ]
+}

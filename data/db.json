@@ -1,0 +1,16 @@
+{
+  "users": [
+    {
+      "id": "db9d9e9672bdbbc4",
+      "name": "Admin",
+      "email": "admin@playchess.com",
+      "passwordHash": "$2b$10$S6Zm0ujjWJNbOaysAcnwm.iNmcIYstt/zNlvd2cB7Ucz8xa/.kRLW",
+      "role": "admin",
+      "school": "",
+      "grade": "",
+      "createdAt": "2026-03-10T23:19:30.015Z"
+    }
+  ],
+  "tournaments": [],
+  "games": []
+}

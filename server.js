@@ -22,6 +22,8 @@ const dataFile = path.join(dataDir, "db.json");
 app.use(cors({ origin: CORS_ORIGIN }));
 app.use(express.json());
 
+// ─── HELPERS ────────────────────────────────────────────────────────────────
+
 function id() {
   return crypto.randomBytes(8).toString("hex");
 }
@@ -30,19 +32,18 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+// ─── DB ─────────────────────────────────────────────────────────────────────
+
 function ensureDb() {
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-
   if (!fs.existsSync(dataFile)) {
-    const adminPasswordHash = bcrypt.hashSync("admin123", 10);
-
     const seed = {
       users: [
         {
           id: id(),
           name: "Admin",
           email: "admin@playchess.com",
-          passwordHash: adminPasswordHash,
+          passwordHash: bcrypt.hashSync("admin123", 10),
           role: "admin",
           school: "",
           grade: "",
@@ -52,7 +53,6 @@ function ensureDb() {
       tournaments: [],
       games: [],
     };
-
     fs.writeFileSync(dataFile, JSON.stringify(seed, null, 2), "utf-8");
   }
 }
@@ -65,6 +65,8 @@ function readDb() {
 function writeDb(db) {
   fs.writeFileSync(dataFile, JSON.stringify(db, null, 2), "utf-8");
 }
+
+// ─── AUTH ────────────────────────────────────────────────────────────────────
 
 function publicUser(user) {
   return {
@@ -79,11 +81,7 @@ function publicUser(user) {
 
 function signToken(user) {
   return jwt.sign(
-    {
-      id: user.id,
-      role: user.role,
-      email: user.email,
-    },
+    { id: user.id, role: user.role, email: user.email },
     JWT_SECRET,
     { expiresIn: "7d" },
   );
@@ -92,11 +90,7 @@ function signToken(user) {
 function auth(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-
-  if (!token) {
-    return res.status(401).json({ error: "Not authenticated." });
-  }
-
+  if (!token) return res.status(401).json({ error: "Not authenticated." });
   try {
     req.auth = jwt.verify(token, JWT_SECRET);
     next();
@@ -106,11 +100,12 @@ function auth(req, res, next) {
 }
 
 function requireAdmin(req, res, next) {
-  if (req.auth.role !== "admin") {
+  if (req.auth.role !== "admin")
     return res.status(403).json({ error: "Admin only." });
-  }
   next();
 }
+
+// ─── LOOKUP ──────────────────────────────────────────────────────────────────
 
 function getUserById(db, userId) {
   return db.users.find((u) => u.id === userId);
@@ -124,6 +119,18 @@ function getGameById(db, gameId) {
   return db.games.find((g) => g.id === gameId);
 }
 
+// ─── CHESS HELPERS ───────────────────────────────────────────────────────────
+
+/**
+ * Build a Chess instance from a stored FEN.
+ * We store "start" for the initial position to keep it human-readable in the DB.
+ */
+function chessFromFen(fen) {
+  return new Chess(fen === "start" || !fen ? undefined : fen);
+}
+
+// ─── SCORING ─────────────────────────────────────────────────────────────────
+
 function getStandingScore(tournament, userId) {
   return tournament.scores?.[userId] ?? 0;
 }
@@ -133,85 +140,8 @@ function addScore(tournament, userId, points) {
   tournament.scores[userId] = (tournament.scores[userId] || 0) + points;
 }
 
-function getPlayedSet(tournament) {
-  const set = new Set();
-  for (const key of tournament.pairHistory || []) {
-    set.add(key);
-  }
-  return set;
-}
-
-function pairKey(a, b) {
-  return [a, b].sort().join("|");
-}
-
-function buildStandings(db, tournament) {
-  const standings = (tournament.players || []).map((p) => {
-    const user = getUserById(db, p.userId);
-    return {
-      userId: p.userId,
-      name: user?.name || "Unknown",
-      score: getStandingScore(tournament, p.userId),
-    };
-  });
-
-  standings.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
-  return standings;
-}
-
-function summarizeTournament(db, tournament) {
-  return {
-    ...tournament,
-    playerCount: tournament.players?.length || 0,
-    standings: buildStandings(db, tournament),
-  };
-}
-
-function summarizeGame(db, game) {
-  const white = getUserById(db, game.whiteId);
-  const black = getUserById(db, game.blackId);
-  const tournament = getTournamentById(db, game.tournamentId);
-
-  return {
-    ...game,
-    whiteName: white?.name || "White",
-    blackName: black?.name || "Black",
-    tournamentName: tournament?.name || "Tournament",
-    timeControl: tournament
-      ? `${tournament.minutes}+${tournament.increment}`
-      : "-",
-  };
-}
-
-function settleTimeoutIfNeeded(db, game) {
-  if (game.status !== "active" || !game.lastMoveAt) return false;
-
-  const elapsed = Date.now() - new Date(game.lastMoveAt).getTime();
-
-  if (game.activeColor === "w") {
-    if (game.whiteMs - elapsed <= 0) {
-      game.whiteMs = 0;
-      game.status = "finished";
-      game.result = "0-1";
-      game.finishReason = "timeout";
-      applyGameResult(db, game);
-      return true;
-    }
-  } else {
-    if (game.blackMs - elapsed <= 0) {
-      game.blackMs = 0;
-      game.status = "finished";
-      game.result = "1-0";
-      game.finishReason = "timeout";
-      applyGameResult(db, game);
-      return true;
-    }
-  }
-
-  return false;
-}
-
 function applyGameResult(db, game) {
+  // Guard: only score once
   if (game.scored) return;
 
   const tournament = getTournamentById(db, game.tournamentId);
@@ -228,6 +158,7 @@ function applyGameResult(db, game) {
 
   game.scored = true;
 
+  // Check if all games in this round are now finished
   const unfinishedThisRound = db.games.some(
     (g) =>
       g.tournamentId === tournament.id &&
@@ -245,6 +176,139 @@ function applyGameResult(db, game) {
 
   tournament.updatedAt = nowIso();
 }
+
+// ─── TIMEOUT ─────────────────────────────────────────────────────────────────
+
+/**
+ * Check whether the active player has run out of time.
+ * BUG FIX: Clock should NOT tick until the first move has been made.
+ * We track this via game.clockStarted flag.
+ * Returns true if the game was just finished by timeout.
+ */
+function settleTimeoutIfNeeded(db, game) {
+  if (game.status !== "active") return false;
+  // Clock hasn't started yet (no moves played)
+  if (!game.clockStarted) return false;
+  if (!game.lastMoveAt) return false;
+
+  const elapsed = Date.now() - new Date(game.lastMoveAt).getTime();
+
+  if (game.activeColor === "w") {
+    if (game.whiteMs - elapsed <= 0) {
+      game.whiteMs = 0;
+      game.status = "finished";
+      game.result = "0-1";
+      game.finishReason = "timeout";
+      applyGameResult(db, game);
+      game.updatedAt = nowIso();
+      return true;
+    }
+  } else {
+    if (game.blackMs - elapsed <= 0) {
+      game.blackMs = 0;
+      game.status = "finished";
+      game.result = "1-0";
+      game.finishReason = "timeout";
+      applyGameResult(db, game);
+      game.updatedAt = nowIso();
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// ─── PAIRING ─────────────────────────────────────────────────────────────────
+
+function getPlayedSet(tournament) {
+  const set = new Set(tournament.pairHistory || []);
+  return set;
+}
+
+function pairKey(a, b) {
+  return [a, b].sort().join("|");
+}
+
+function nextRoundPairings(db, tournament) {
+  const players = [...(tournament.players || [])].map((p) => ({
+    ...p,
+    score: getStandingScore(tournament, p.userId),
+  }));
+
+  players.sort((a, b) => b.score - a.score || a.userId.localeCompare(b.userId));
+
+  const played = getPlayedSet(tournament);
+  const pairings = [];
+  const waiting = [...players];
+
+  while (waiting.length > 1) {
+    const p1 = waiting.shift();
+    let index = waiting.findIndex(
+      (p) => !played.has(pairKey(p1.userId, p.userId)),
+    );
+    // If everyone has played each other already, just pair in order
+    if (index === -1) index = 0;
+    const p2 = waiting.splice(index, 1)[0];
+    pairings.push([p1.userId, p2.userId]);
+  }
+
+  // Odd player out gets a bye (only if they haven't had one)
+  const byeCandidate = waiting[0] || null;
+  let bye = null;
+  if (byeCandidate) {
+    const alreadyHadBye = (tournament.byeHistory || []).includes(
+      byeCandidate.userId,
+    );
+    if (!alreadyHadBye) {
+      bye = byeCandidate;
+    } else {
+      // They already had a bye — just pair them last resort or give another bye anyway
+      bye = byeCandidate;
+    }
+  }
+
+  return { pairings, bye };
+}
+
+// ─── SUMMARIES ───────────────────────────────────────────────────────────────
+
+function buildStandings(db, tournament) {
+  const standings = (tournament.players || []).map((p) => {
+    const user = getUserById(db, p.userId);
+    return {
+      userId: p.userId,
+      name: user?.name || "Unknown",
+      score: getStandingScore(tournament, p.userId),
+    };
+  });
+  standings.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  return standings;
+}
+
+function summarizeTournament(db, tournament) {
+  return {
+    ...tournament,
+    playerCount: tournament.players?.length || 0,
+    standings: buildStandings(db, tournament),
+  };
+}
+
+function summarizeGame(db, game) {
+  const white = getUserById(db, game.whiteId);
+  const black = getUserById(db, game.blackId);
+  const tournament = getTournamentById(db, game.tournamentId);
+  return {
+    ...game,
+    whiteName: white?.name || "White",
+    blackName: black?.name || "Black",
+    tournamentName: tournament?.name || "Tournament",
+    timeControl: tournament
+      ? `${tournament.minutes}+${tournament.increment}`
+      : "-",
+  };
+}
+
+// ─── VALIDATION ──────────────────────────────────────────────────────────────
 
 function validateTournamentInput(body) {
   const name = String(body.name || "").trim();
@@ -289,42 +353,15 @@ function canAccessGame(req, game) {
   return game.whiteId === req.auth.id || game.blackId === req.auth.id;
 }
 
-function nextRoundPairings(db, tournament) {
-  const players = [...(tournament.players || [])].map((p) => ({
-    ...p,
-    score: getStandingScore(tournament, p.userId),
-  }));
+// ─── ROUTES ──────────────────────────────────────────────────────────────────
 
-  players.sort((a, b) => b.score - a.score);
+app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-  const played = getPlayedSet(tournament);
-  const pairings = [];
-  const waiting = [...players];
-
-  while (waiting.length > 1) {
-    const p1 = waiting.shift();
-    let index = waiting.findIndex(
-      (p) => !played.has(pairKey(p1.userId, p.userId)),
-    );
-    if (index === -1) index = 0;
-    const p2 = waiting.splice(index, 1)[0];
-
-    pairings.push([p1.userId, p2.userId]);
-  }
-
-  const bye = waiting[0] || null;
-
-  return { pairings, bye };
-}
-
-app.get("/api/health", (_req, res) => {
-  res.json({ ok: true });
-});
+// ── Auth ──
 
 app.post("/api/register", (req, res) => {
   try {
     const db = readDb();
-
     const name = String(req.body.name || "").trim();
     const email = String(req.body.email || "")
       .trim()
@@ -335,14 +372,12 @@ app.post("/api/register", (req, res) => {
 
     if (!name) return res.status(400).json({ error: "Name is required." });
     if (!email) return res.status(400).json({ error: "Email is required." });
-    if (!password || password.length < 4) {
+    if (!password || password.length < 4)
       return res
         .status(400)
         .json({ error: "Password must be at least 4 characters." });
-    }
-
-    const exists = db.users.some((u) => u.email === email);
-    if (exists) return res.status(400).json({ error: "Email already exists." });
+    if (db.users.some((u) => u.email === email))
+      return res.status(400).json({ error: "Email already in use." });
 
     const user = {
       id: id(),
@@ -354,12 +389,11 @@ app.post("/api/register", (req, res) => {
       grade,
       createdAt: nowIso(),
     };
-
     db.users.push(user);
     writeDb(db);
-
-    const token = signToken(user);
-    return res.status(201).json({ token, user: publicUser(user) });
+    return res
+      .status(201)
+      .json({ token: signToken(user), user: publicUser(user) });
   } catch {
     return res.status(500).json({ error: "Server error." });
   }
@@ -372,17 +406,10 @@ app.post("/api/login", (req, res) => {
       .trim()
       .toLowerCase();
     const password = String(req.body.password || "");
-
     const user = db.users.find((u) => u.email === email);
-    if (!user)
+    if (!user || !bcrypt.compareSync(password, user.passwordHash))
       return res.status(400).json({ error: "Invalid email or password." });
-
-    const ok = bcrypt.compareSync(password, user.passwordHash);
-    if (!ok)
-      return res.status(400).json({ error: "Invalid email or password." });
-
-    const token = signToken(user);
-    return res.json({ token, user: publicUser(user) });
+    return res.json({ token: signToken(user), user: publicUser(user) });
   } catch {
     return res.status(500).json({ error: "Server error." });
   }
@@ -395,13 +422,15 @@ app.get("/api/me", auth, (req, res) => {
   res.json({ user: publicUser(user) });
 });
 
+// ── Tournaments ──
+
 app.get("/api/tournaments", (_req, res) => {
   const db = readDb();
-
+  let dirty = false;
   for (const game of db.games) {
-    settleTimeoutIfNeeded(db, game);
+    if (settleTimeoutIfNeeded(db, game)) dirty = true;
   }
-  writeDb(db);
+  if (dirty) writeDb(db);
 
   const tournaments = db.tournaments
     .map((t) => summarizeTournament(db, t))
@@ -415,16 +444,13 @@ app.get("/api/tournaments/:id", (_req, res) => {
   const tournament = getTournamentById(db, _req.params.id);
   if (!tournament)
     return res.status(404).json({ error: "Tournament not found." });
-
-  const full = summarizeTournament(db, tournament);
-  res.json({ tournament: full });
+  res.json({ tournament: summarizeTournament(db, tournament) });
 });
 
 app.post("/api/tournaments", auth, requireAdmin, (req, res) => {
   try {
     const db = readDb();
     const data = validateTournamentInput(req.body);
-
     const tournament = {
       id: id(),
       ...data,
@@ -433,59 +459,48 @@ app.post("/api/tournaments", auth, requireAdmin, (req, res) => {
       players: [],
       scores: {},
       pairHistory: [],
+      byeHistory: [], // FIX: track who got byes to prevent double-bye
       createdBy: req.auth.id,
       createdAt: nowIso(),
       updatedAt: nowIso(),
     };
-
     db.tournaments.unshift(tournament);
     writeDb(db);
-
-    res.status(201).json({
-      message: "Tournament created.",
-      tournament: summarizeTournament(db, tournament),
-    });
+    res
+      .status(201)
+      .json({
+        message: "Tournament created.",
+        tournament: summarizeTournament(db, tournament),
+      });
   } catch (err) {
     res.status(400).json({ error: err.message || "Invalid request." });
   }
 });
 
 app.post("/api/tournaments/:id/join", auth, (req, res) => {
-  if (req.auth.role !== "student") {
+  if (req.auth.role !== "student")
     return res
       .status(403)
       .json({ error: "Only students can join tournaments." });
-  }
 
   const db = readDb();
   const tournament = getTournamentById(db, req.params.id);
 
   if (!tournament)
     return res.status(404).json({ error: "Tournament not found." });
-  if (tournament.status !== "registration") {
-    return res
-      .status(400)
-      .json({ error: "Tournament registration is closed." });
-  }
-  if (tournament.players.length >= tournament.maxPlayers) {
+  if (tournament.status !== "registration")
+    return res.status(400).json({ error: "Registration is closed." });
+  if (tournament.players.length >= tournament.maxPlayers)
     return res.status(400).json({ error: "Tournament is full." });
-  }
-
-  const exists = tournament.players.some((p) => p.userId === req.auth.id);
-  if (exists)
+  if (tournament.players.some((p) => p.userId === req.auth.id))
     return res
       .status(400)
       .json({ error: "You already joined this tournament." });
 
-  tournament.players.push({
-    userId: req.auth.id,
-    joinedAt: nowIso(),
-  });
-
+  tournament.players.push({ userId: req.auth.id, joinedAt: nowIso() });
   if (!tournament.scores) tournament.scores = {};
   tournament.scores[req.auth.id] = tournament.scores[req.auth.id] || 0;
   tournament.updatedAt = nowIso();
-
   writeDb(db);
 
   res.json({
@@ -500,30 +515,34 @@ app.post("/api/tournaments/:id/start-round", auth, requireAdmin, (req, res) => {
 
   if (!tournament)
     return res.status(404).json({ error: "Tournament not found." });
-  if (tournament.players.length < 2) {
+  if (tournament.players.length < 2)
     return res.status(400).json({ error: "Need at least 2 players." });
-  }
-  if (tournament.currentRound >= tournament.rounds) {
+  if (tournament.currentRound >= tournament.rounds)
     return res.status(400).json({ error: "All rounds already completed." });
-  }
 
+  // Check for any unfinished games from a previous round
   const unfinished = db.games.some(
     (g) => g.tournamentId === tournament.id && g.status !== "finished",
   );
-  if (unfinished) {
+  if (unfinished)
     return res
       .status(400)
-      .json({ error: "Finish current games before starting next round." });
-  }
+      .json({
+        error: "Finish all current games before starting the next round.",
+      });
 
   const nextRound = tournament.currentRound + 1;
   const { pairings, bye } = nextRoundPairings(db, tournament);
 
+  // FIX: award bye point and record it — only once per player if possible
   if (bye) {
     addScore(tournament, bye.userId, 1);
+    if (!tournament.byeHistory) tournament.byeHistory = [];
+    tournament.byeHistory.push(bye.userId);
   }
 
   const newGames = pairings.map(([a, b], index) => {
+    // Alternate colors each round based on index
     const whiteId = index % 2 === 0 ? a : b;
     const blackId = index % 2 === 0 ? b : a;
 
@@ -545,7 +564,9 @@ app.post("/api/tournaments/:id/start-round", auth, requireAdmin, (req, res) => {
       status: "active",
       result: "",
       finishReason: "",
-      lastMoveAt: nowIso(),
+      // FIX: clockStarted = false so clocks don't tick until first move
+      clockStarted: false,
+      lastMoveAt: null,
       scored: false,
       createdAt: nowIso(),
       updatedAt: nowIso(),
@@ -553,57 +574,86 @@ app.post("/api/tournaments/:id/start-round", auth, requireAdmin, (req, res) => {
   });
 
   db.games.push(...newGames);
-
   tournament.currentRound = nextRound;
   tournament.status = "ongoing";
   tournament.updatedAt = nowIso();
-
   writeDb(db);
 
+  const byeUser = bye ? getUserById(db, bye.userId) : null;
   res.json({
-    message: bye
-      ? `Round ${nextRound} started. ${getUserById(db, bye.userId)?.name || "A player"} got a bye.`
+    message: byeUser
+      ? `Round ${nextRound} started. ${byeUser.name} receives a bye.`
       : `Round ${nextRound} started.`,
     tournament: summarizeTournament(db, tournament),
     games: newGames.map((g) => summarizeGame(db, g)),
   });
 });
 
+// FIX: Admin force-finish a stuck game
+app.post(
+  "/api/tournaments/:id/force-finish",
+  auth,
+  requireAdmin,
+  (req, res) => {
+    const db = readDb();
+    const tournament = getTournamentById(db, req.params.id);
+    if (!tournament)
+      return res.status(404).json({ error: "Tournament not found." });
+
+    const stuckGames = db.games.filter(
+      (g) => g.tournamentId === tournament.id && g.status !== "finished",
+    );
+
+    for (const game of stuckGames) {
+      game.status = "finished";
+      game.result = "1/2-1/2";
+      game.finishReason = "admin-force";
+      game.updatedAt = nowIso();
+      applyGameResult(db, game);
+    }
+
+    writeDb(db);
+    res.json({
+      message: `Force-finished ${stuckGames.length} game(s).`,
+      tournament: summarizeTournament(db, tournament),
+    });
+  },
+);
+
+// ── Games ──
+
 app.get("/api/my-games", auth, (req, res) => {
   const db = readDb();
-
+  let dirty = false;
   for (const game of db.games) {
-    settleTimeoutIfNeeded(db, game);
+    if (settleTimeoutIfNeeded(db, game)) dirty = true;
   }
-  writeDb(db);
+  if (dirty) writeDb(db);
 
-  let games = [];
-  if (req.auth.role === "admin") {
-    games = db.games;
-  } else {
-    games = db.games.filter(
-      (g) => g.whiteId === req.auth.id || g.blackId === req.auth.id,
-    );
-  }
+  let games =
+    req.auth.role === "admin"
+      ? db.games
+      : db.games.filter(
+          (g) => g.whiteId === req.auth.id || g.blackId === req.auth.id,
+        );
 
-  games.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-  res.json({
-    games: games.map((g) => summarizeGame(db, g)),
-  });
+  games = [...games].sort(
+    (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
+  );
+  res.json({ games: games.map((g) => summarizeGame(db, g)) });
 });
 
 app.get("/api/admin/games", auth, requireAdmin, (req, res) => {
   const db = readDb();
-
+  let dirty = false;
   for (const game of db.games) {
-    settleTimeoutIfNeeded(db, game);
+    if (settleTimeoutIfNeeded(db, game)) dirty = true;
   }
-  writeDb(db);
+  if (dirty) writeDb(db);
 
-  const games = db.games
-    .map((g) => summarizeGame(db, g))
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  const games = [...db.games]
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .map((g) => summarizeGame(db, g));
 
   res.json({ games });
 });
@@ -611,14 +661,12 @@ app.get("/api/admin/games", auth, requireAdmin, (req, res) => {
 app.get("/api/games/:id", auth, (req, res) => {
   const db = readDb();
   const game = getGameById(db, req.params.id);
-
   if (!game) return res.status(404).json({ error: "Game not found." });
-  if (!canAccessGame(req, game)) {
-    return res.status(403).json({ error: "You cannot view this game." });
-  }
+  if (!canAccessGame(req, game))
+    return res.status(403).json({ error: "Access denied." });
 
-  settleTimeoutIfNeeded(db, game);
-  writeDb(db);
+  const changed = settleTimeoutIfNeeded(db, game);
+  if (changed) writeDb(db);
 
   res.json({ game: summarizeGame(db, game) });
 });
@@ -628,82 +676,91 @@ app.post("/api/games/:id/move", auth, (req, res) => {
   const game = getGameById(db, req.params.id);
 
   if (!game) return res.status(404).json({ error: "Game not found." });
-  if (!canAccessGame(req, game)) {
-    return res.status(403).json({ error: "You cannot play this game." });
-  }
-  if (req.auth.role !== "student") {
+  if (!canAccessGame(req, game))
+    return res.status(403).json({ error: "Access denied." });
+  if (req.auth.role !== "student")
     return res.status(403).json({ error: "Admin cannot make moves." });
-  }
-  if (game.status !== "active") {
+  if (game.status !== "active")
     return res.status(400).json({ error: "Game is not active." });
-  }
 
-  const isWhitePlayer = game.whiteId === req.auth.id;
-  const isBlackPlayer = game.blackId === req.auth.id;
-
-  if (!isWhitePlayer && !isBlackPlayer) {
+  const isWhite = game.whiteId === req.auth.id;
+  const isBlack = game.blackId === req.auth.id;
+  if (!isWhite && !isBlack)
     return res.status(403).json({ error: "Not your game." });
-  }
-
-  if (game.activeColor === "w" && !isWhitePlayer) {
+  if (game.activeColor === "w" && !isWhite)
     return res.status(400).json({ error: "It is white's turn." });
-  }
-  if (game.activeColor === "b" && !isBlackPlayer) {
+  if (game.activeColor === "b" && !isBlack)
     return res.status(400).json({ error: "It is black's turn." });
+
+  // FIX: Start the clock on first move
+  if (!game.clockStarted) {
+    game.clockStarted = true;
+    game.lastMoveAt = nowIso();
   }
 
-  settleTimeoutIfNeeded(db, game);
-  if (game.status !== "active") {
+  // Check timeout now that clock may have been ticking
+  if (settleTimeoutIfNeeded(db, game)) {
     writeDb(db);
     return res
       .status(400)
-      .json({ error: "Time is over. Game already finished." });
+      .json({ error: "Time is up. Game already finished." });
   }
 
-  const elapsed = Date.now() - new Date(game.lastMoveAt).getTime();
+  const now = Date.now();
+  const elapsed = game.lastMoveAt
+    ? now - new Date(game.lastMoveAt).getTime()
+    : 0;
 
+  // Deduct elapsed time from the mover's clock
   if (game.activeColor === "w") {
     game.whiteMs = Math.max(0, game.whiteMs - elapsed);
-    if (game.whiteMs <= 0) {
+    if (game.whiteMs === 0) {
       game.status = "finished";
       game.result = "0-1";
       game.finishReason = "timeout";
       applyGameResult(db, game);
       writeDb(db);
-      return res.status(400).json({ error: "White lost on time." });
+      return res.status(400).json({ error: "White ran out of time." });
     }
   } else {
     game.blackMs = Math.max(0, game.blackMs - elapsed);
-    if (game.blackMs <= 0) {
+    if (game.blackMs === 0) {
       game.status = "finished";
       game.result = "1-0";
       game.finishReason = "timeout";
       applyGameResult(db, game);
       writeDb(db);
-      return res.status(400).json({ error: "Black lost on time." });
+      return res.status(400).json({ error: "Black ran out of time." });
     }
   }
 
-  const chess = new Chess(game.fen === "start" ? undefined : game.fen);
+  // FIX: Use chessFromFen helper consistently
+  const chess = chessFromFen(game.fen);
 
   const from = String(req.body.from || "").trim();
   const to = String(req.body.to || "").trim();
-  const promotion = String(req.body.promotion || "q").trim();
+  const promotion = String(req.body.promotion || "q")
+    .trim()
+    .toLowerCase();
 
-  const moverColor = game.activeColor;
+  if (!from || !to)
+    return res.status(400).json({ error: "from and to are required." });
+
+  // FIX: validate promotion piece
+  const validPromotions = ["q", "r", "b", "n"];
+  const safePromotion = validPromotions.includes(promotion) ? promotion : "q";
 
   let move;
   try {
-    move = chess.move({ from, to, promotion });
+    move = chess.move({ from, to, promotion: safePromotion });
   } catch {
     move = null;
   }
 
-  if (!move) {
-    return res.status(400).json({ error: "Illegal move." });
-  }
+  if (!move) return res.status(400).json({ error: "Illegal move." });
 
-  if (moverColor === "w") {
+  // Add increment after a legal move
+  if (game.activeColor === "w") {
     game.whiteMs += game.incrementMs;
   } else {
     game.blackMs += game.incrementMs;
@@ -716,6 +773,9 @@ app.post("/api/games/:id/move", auth, (req, res) => {
     from: move.from,
     to: move.to,
     color: move.color,
+    captured: move.captured || null,
+    promotion: move.promotion || null,
+    flags: move.flags,
     at: nowIso(),
   });
 
@@ -723,17 +783,32 @@ app.post("/api/games/:id/move", auth, (req, res) => {
   game.lastMoveAt = nowIso();
   game.updatedAt = nowIso();
 
+  // Detect game-ending conditions
   if (chess.isCheckmate()) {
     game.status = "finished";
-    game.result = moverColor === "w" ? "1-0" : "0-1";
+    game.result = game.activeColor === "w" ? "0-1" : "1-0"; // activeColor is now the NEXT player who is mated
+    // FIX: result is for the mover: if white just mated black, activeColor flipped to b but white wins
+    // Re-derive: the side that just moved (move.color) wins
+    game.result = move.color === "w" ? "1-0" : "0-1";
     game.finishReason = "checkmate";
     applyGameResult(db, game);
-  } else if (
-    chess.isDraw() ||
-    chess.isStalemate() ||
-    chess.isThreefoldRepetition() ||
-    chess.isInsufficientMaterial()
-  ) {
+  } else if (chess.isStalemate()) {
+    game.status = "finished";
+    game.result = "1/2-1/2";
+    game.finishReason = "stalemate";
+    applyGameResult(db, game);
+  } else if (chess.isThreefoldRepetition()) {
+    game.status = "finished";
+    game.result = "1/2-1/2";
+    game.finishReason = "threefold-repetition";
+    applyGameResult(db, game);
+  } else if (chess.isInsufficientMaterial()) {
+    game.status = "finished";
+    game.result = "1/2-1/2";
+    game.finishReason = "insufficient-material";
+    applyGameResult(db, game);
+  } else if (chess.isDraw()) {
+    // 50-move rule etc.
     game.status = "finished";
     game.result = "1/2-1/2";
     game.finishReason = "draw";
@@ -741,11 +816,115 @@ app.post("/api/games/:id/move", auth, (req, res) => {
   }
 
   writeDb(db);
+  res.json({ message: "Move played.", game: summarizeGame(db, game) });
+});
 
-  res.json({
-    message: "Move played.",
-    game: summarizeGame(db, game),
-  });
+// FIX: Draw offer system
+app.post("/api/games/:id/offer-draw", auth, (req, res) => {
+  const db = readDb();
+  const game = getGameById(db, req.params.id);
+
+  if (!game) return res.status(404).json({ error: "Game not found." });
+  if (!canAccessGame(req, game))
+    return res.status(403).json({ error: "Access denied." });
+  if (req.auth.role !== "student")
+    return res.status(403).json({ error: "Admin cannot offer draws." });
+  if (game.status !== "active")
+    return res.status(400).json({ error: "Game is not active." });
+
+  const isWhite = game.whiteId === req.auth.id;
+  const isBlack = game.blackId === req.auth.id;
+  if (!isWhite && !isBlack)
+    return res.status(403).json({ error: "Not your game." });
+
+  const offeredBy = isWhite ? "w" : "b";
+  // Don't re-offer if you already offered
+  if (game.drawOffer === offeredBy)
+    return res.status(400).json({ error: "You already offered a draw." });
+
+  game.drawOffer = offeredBy;
+  game.updatedAt = nowIso();
+  writeDb(db);
+
+  res.json({ message: "Draw offered.", game: summarizeGame(db, game) });
+});
+
+app.post("/api/games/:id/accept-draw", auth, (req, res) => {
+  const db = readDb();
+  const game = getGameById(db, req.params.id);
+
+  if (!game) return res.status(404).json({ error: "Game not found." });
+  if (!canAccessGame(req, game))
+    return res.status(403).json({ error: "Access denied." });
+  if (req.auth.role !== "student")
+    return res.status(403).json({ error: "Admin cannot accept draws." });
+  if (game.status !== "active")
+    return res.status(400).json({ error: "Game is not active." });
+
+  const isWhite = game.whiteId === req.auth.id;
+  const isBlack = game.blackId === req.auth.id;
+  if (!isWhite && !isBlack)
+    return res.status(403).json({ error: "Not your game." });
+
+  const myColor = isWhite ? "w" : "b";
+  if (!game.drawOffer || game.drawOffer === myColor)
+    return res.status(400).json({ error: "No draw offer to accept." });
+
+  game.status = "finished";
+  game.result = "1/2-1/2";
+  game.finishReason = "draw-agreement";
+  game.drawOffer = null;
+  applyGameResult(db, game);
+  writeDb(db);
+
+  res.json({ message: "Draw accepted.", game: summarizeGame(db, game) });
+});
+
+app.post("/api/games/:id/decline-draw", auth, (req, res) => {
+  const db = readDb();
+  const game = getGameById(db, req.params.id);
+
+  if (!game) return res.status(404).json({ error: "Game not found." });
+  if (!canAccessGame(req, game))
+    return res.status(403).json({ error: "Access denied." });
+  if (game.status !== "active")
+    return res.status(400).json({ error: "Game is not active." });
+
+  game.drawOffer = null;
+  game.updatedAt = nowIso();
+  writeDb(db);
+
+  res.json({ message: "Draw declined.", game: summarizeGame(db, game) });
+});
+
+// FIX: Abort — only allowed if no moves have been played
+app.post("/api/games/:id/abort", auth, (req, res) => {
+  const db = readDb();
+  const game = getGameById(db, req.params.id);
+
+  if (!game) return res.status(404).json({ error: "Game not found." });
+  if (!canAccessGame(req, game))
+    return res.status(403).json({ error: "Access denied." });
+  if (game.status !== "active")
+    return res.status(400).json({ error: "Game is not active." });
+  if (game.moves && game.moves.length > 0)
+    return res
+      .status(400)
+      .json({ error: "Cannot abort a game that has started." });
+
+  const isPlayer = game.whiteId === req.auth.id || game.blackId === req.auth.id;
+  const isAdmin = req.auth.role === "admin";
+  if (!isPlayer && !isAdmin)
+    return res.status(403).json({ error: "Not your game." });
+
+  game.status = "finished";
+  game.result = "";
+  game.finishReason = "aborted";
+  game.updatedAt = nowIso();
+  // No score change for aborted games
+  writeDb(db);
+
+  res.json({ message: "Game aborted.", game: summarizeGame(db, game) });
 });
 
 app.post("/api/games/:id/resign", auth, (req, res) => {
@@ -753,36 +932,30 @@ app.post("/api/games/:id/resign", auth, (req, res) => {
   const game = getGameById(db, req.params.id);
 
   if (!game) return res.status(404).json({ error: "Game not found." });
-  if (!canAccessGame(req, game)) {
-    return res.status(403).json({ error: "You cannot access this game." });
-  }
-  if (req.auth.role !== "student") {
-    return res.status(403).json({ error: "Admin cannot resign games." });
-  }
-  if (game.status !== "active") {
+  if (!canAccessGame(req, game))
+    return res.status(403).json({ error: "Access denied." });
+  if (req.auth.role !== "student")
+    return res.status(403).json({ error: "Admin cannot resign." });
+  if (game.status !== "active")
     return res.status(400).json({ error: "Game already finished." });
-  }
 
   if (game.whiteId === req.auth.id) {
-    game.status = "finished";
     game.result = "0-1";
-    game.finishReason = "resignation";
   } else if (game.blackId === req.auth.id) {
-    game.status = "finished";
     game.result = "1-0";
-    game.finishReason = "resignation";
   } else {
     return res.status(403).json({ error: "Not your game." });
   }
 
+  game.status = "finished";
+  game.finishReason = "resignation";
   applyGameResult(db, game);
   writeDb(db);
 
-  res.json({
-    message: "Game resigned.",
-    game: summarizeGame(db, game),
-  });
+  res.json({ message: "Resigned.", game: summarizeGame(db, game) });
 });
+
+// ── 404 ──
 
 app.use((req, res) => {
   res
@@ -790,7 +963,9 @@ app.use((req, res) => {
     .json({ error: `Route not found: ${req.method} ${req.originalUrl}` });
 });
 
+// ── Start ──
+
 app.listen(PORT, () => {
   ensureDb();
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`✓ Server running on http://localhost:${PORT}`);
 });

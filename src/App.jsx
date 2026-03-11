@@ -49,8 +49,10 @@ function getLiveClock(game, color) {
   if (!game) return 0;
   const key = color === "w" ? "whiteMs" : "blackMs";
   let ms = game[key] ?? 0;
+  // FIX: don't tick until first move has been made
   if (
     game.status === "active" &&
+    game.clockStarted &&
     game.activeColor === color &&
     game.lastMoveAt
   ) {
@@ -1719,123 +1721,183 @@ function AdminDashboard() {
   );
 }
 
-// ─── GAME PAGE ────────────────────────────────────────────────────────────────
+// ─── GAME PAGE — full replacement ───────────────────────────────────────────
+// Drop this entire block in place of the GamePage function + its helpers
+// (CapturedPieces, Clock, MoveHistory) in App.jsx
 
-function CapturedPieces({ pieces, color }) {
+function CapturedPieces({ pieces, advantage }) {
+  const order = { q: 0, r: 1, b: 2, n: 3, p: 4 };
   const sorted = [...pieces].sort(
-    (a, b) => (PIECE_VALUES[b.type] || 0) - (PIECE_VALUES[a.type] || 0),
+    (a, b) => (order[a.type] ?? 9) - (order[b.type] ?? 9),
   );
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 1, minHeight: 22 }}>
+    <div
+      style={{ display: "flex", alignItems: "center", gap: 2, minHeight: 20 }}
+    >
       {sorted.map((p, i) => (
         <span
           key={i}
-          className="captured-piece"
-          title={`Captured ${p.type}`}
-          style={{ color: p.color === "w" ? "#f0d9b5" : "#b58863" }}
+          style={{
+            fontSize: 14,
+            lineHeight: 1,
+            opacity: 0.85,
+            color: p.color === "w" ? "#f0d9b5" : "#5a3a1a",
+          }}
         >
           {PIECE_UNICODE[`${p.color}${p.type.toUpperCase()}`] || p.type}
         </span>
       ))}
+      {advantage > 0 && (
+        <span
+          style={{
+            fontSize: 11,
+            fontFamily: "JetBrains Mono, monospace",
+            color: "#c9a84c",
+            marginLeft: 4,
+          }}
+        >
+          +{advantage}
+        </span>
+      )}
     </div>
   );
 }
 
-function Clock({ ms, active, label }) {
-  const secs = Math.floor(ms / 1000);
-  const low = secs <= 10 && active;
-  const classes = `clock${active ? " active" : ""}${low ? " low" : ""}`;
+function Clock({ ms, active, lowThreshold = 10 }) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  const tenths = Math.floor((ms % 1000) / 100);
+  const isLow = total <= lowThreshold && active;
+  const isCritical = total <= 5 && active;
 
   return (
     <div
       style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "flex-end",
+        fontFamily: "JetBrains Mono, monospace",
+        fontVariantNumeric: "tabular-nums",
+        fontSize: 38,
+        fontWeight: 700,
+        letterSpacing: "-0.03em",
+        lineHeight: 1,
+        color: isCritical
+          ? "#ef4444"
+          : isLow
+            ? "#f59e0b"
+            : active
+              ? "#c9a84c"
+              : "#4a4a5a",
+        transition: "color 0.3s",
+        animation: isCritical ? "pulse-red 0.8s ease-in-out infinite" : "none",
+        minWidth: 110,
+        textAlign: "right",
       }}
     >
-      <div
-        style={{
-          fontSize: 11,
-          fontFamily: "JetBrains Mono, monospace",
-          color: "#4a4a5a",
-          textTransform: "uppercase",
-          letterSpacing: "0.08em",
-          marginBottom: 2,
-        }}
-      >
-        {label}
-      </div>
-      <div
-        className={classes}
-        style={{
-          fontSize: 36,
-          fontWeight: 700,
-          letterSpacing: "-0.02em",
-          lineHeight: 1,
-        }}
-      >
-        {formatMs(ms)}
-      </div>
+      {String(m).padStart(2, "0")}:{String(s).padStart(2, "0")}
+      {total < 20 && (
+        <span style={{ fontSize: 20, opacity: 0.7 }}>.{tenths}</span>
+      )}
     </div>
   );
 }
 
 function MoveHistory({ moves, currentIndex, onSelect }) {
+  const listRef = useRef(null);
+
+  useEffect(() => {
+    if (!listRef.current) return;
+    const active = listRef.current.querySelector(".move-cell.current");
+    if (active) active.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [currentIndex]);
+
   const pairs = [];
   for (let i = 0; i < moves.length; i += 2) {
-    pairs.push({ n: Math.floor(i / 2) + 1, w: moves[i], b: moves[i + 1] });
+    pairs.push({
+      n: Math.floor(i / 2) + 1,
+      w: moves[i],
+      b: moves[i + 1],
+      wi: i,
+      bi: i + 1,
+    });
   }
-
-  const listRef = useRef(null);
-  useEffect(() => {
-    if (listRef.current) {
-      listRef.current.scrollTop = listRef.current.scrollHeight;
-    }
-  }, [moves.length]);
 
   return (
     <div
       ref={listRef}
-      style={{ height: 240, overflowY: "auto", padding: "8px 4px" }}
+      style={{ height: 260, overflowY: "auto", padding: "4px 0" }}
     >
       {!pairs.length ? (
         <div
           style={{
-            color: "#4a4a5a",
+            padding: "12px 16px",
+            color: "#3a3a4a",
             fontFamily: "JetBrains Mono, monospace",
-            fontSize: 13,
-            padding: "8px 4px",
+            fontSize: 12,
           }}
         >
-          Game not started.
+          No moves yet
         </div>
       ) : (
-        pairs.map(({ n, w, b }) => (
-          <div key={n} className="move-pair" style={{ marginBottom: 2 }}>
+        pairs.map(({ n, w, b, wi, bi }) => (
+          <div
+            key={n}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "28px 1fr 1fr",
+              gap: 1,
+            }}
+          >
             <span
               style={{
-                fontSize: 12,
+                padding: "4px 6px",
+                fontSize: 11,
                 fontFamily: "JetBrains Mono, monospace",
-                color: "#4a4a5a",
-                padding: "5px 4px",
+                color: "#3a3a4a",
+                lineHeight: "22px",
+                textAlign: "right",
               }}
             >
               {n}.
             </span>
-            <span
-              className={`move-cell${currentIndex === (n - 1) * 2 ? " current" : ""}`}
-              onClick={() => onSelect && onSelect((n - 1) * 2)}
+            <button
+              className={`move-cell${currentIndex === wi ? " current" : ""}`}
+              onClick={() => onSelect(wi)}
+              style={{
+                all: "unset",
+                padding: "4px 8px",
+                cursor: "pointer",
+                fontSize: 13,
+                fontFamily: "JetBrains Mono, monospace",
+                borderRadius: 3,
+                color: currentIndex === wi ? "#c9a84c" : "#c8c5c0",
+                background:
+                  currentIndex === wi ? "rgba(201,168,76,0.15)" : "transparent",
+                transition: "background 0.1s",
+              }}
             >
               {w?.san}
-            </span>
+            </button>
             {b && (
-              <span
-                className={`move-cell${currentIndex === (n - 1) * 2 + 1 ? " current" : ""}`}
-                onClick={() => onSelect && onSelect((n - 1) * 2 + 1)}
+              <button
+                className={`move-cell${currentIndex === bi ? " current" : ""}`}
+                onClick={() => onSelect(bi)}
+                style={{
+                  all: "unset",
+                  padding: "4px 8px",
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontFamily: "JetBrains Mono, monospace",
+                  borderRadius: 3,
+                  color: currentIndex === bi ? "#c9a84c" : "#c8c5c0",
+                  background:
+                    currentIndex === bi
+                      ? "rgba(201,168,76,0.15)"
+                      : "transparent",
+                  transition: "background 0.1s",
+                }}
               >
                 {b?.san}
-              </span>
+              </button>
             )}
           </div>
         ))
@@ -1846,107 +1908,133 @@ function MoveHistory({ moves, currentIndex, onSelect }) {
 
 function GamePage({ user }) {
   const { id } = useParams();
+
+  // ── State ──
   const [game, setGame] = useState(null);
   const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
   const [whiteMs, setWhiteMs] = useState(0);
   const [blackMs, setBlackMs] = useState(0);
   const [moveIndex, setMoveIndex] = useState(-1);
-  const [viewFen, setViewFen] = useState(null);
-  const [highlightSquares, setHighlightSquares] = useState({});
-  const [selectedSquare, setSelectedSquare] = useState(null);
-  const [legalMoves, setLegalMoves] = useState({});
-  const [premove, setPremove] = useState(null);
-  const [promotionSquare, setPromotionSquare] = useState(null);
-  const [promotionPiece, setPromotionPiece] = useState("q");
-  const [showResignConfirm, setShowResignConfirm] = useState(false);
-  const [lastMove, setLastMove] = useState(null);
+  const [viewFen, setViewFen] = useState(null); // null = live
+  const [selectedSq, setSelectedSq] = useState(null);
+  const [legalDots, setLegalDots] = useState({});
+  const [premove, setPremove] = useState(null); // { from, to }
+  const [promoData, setPromoData] = useState(null); // { from, to }
+  const [promoPiece, setPromoPiece] = useState("q");
+  const [lastMove, setLastMove] = useState(null); // { from, to }
   const [isMoving, setIsMoving] = useState(false);
 
-  const animFrameRef = useRef(null);
+  // dialogs
+  const [resignConfirm, setResignConfirm] = useState(false);
+  const [drawSent, setDrawSent] = useState(false);
+  const [notification, setNotification] = useState(null); // { type, text }
+
+  const rafRef = useRef(null);
   const gameRef = useRef(null);
   gameRef.current = game;
 
-  // ── Clock ticker ──
+  // ── Notify helper ──
+  function notify(type, text, ms = 4000) {
+    setNotification({ type, text });
+    setTimeout(() => setNotification(null), ms);
+  }
+
+  // ── RAF clock ──
   useEffect(() => {
     let last = Date.now();
     function tick() {
       const g = gameRef.current;
-      if (!g) {
-        animFrameRef.current = requestAnimationFrame(tick);
-        return;
-      }
-
       const now = Date.now();
       const delta = now - last;
       last = now;
-
-      if (g.status === "active") {
-        if (g.activeColor === "w") setWhiteMs((ms) => Math.max(0, ms - delta));
-        else setBlackMs((ms) => Math.max(0, ms - delta));
+      if (g?.status === "active" && g.clockStarted) {
+        if (g.activeColor === "w") setWhiteMs((p) => Math.max(0, p - delta));
+        else setBlackMs((p) => Math.max(0, p - delta));
       }
-
-      animFrameRef.current = requestAnimationFrame(tick);
+      rafRef.current = requestAnimationFrame(tick);
     }
-    animFrameRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animFrameRef.current);
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
   }, []);
 
-  // ── Load game from server ──
+  // ── Load ──
   const load = useCallback(
     async (silent = false) => {
       try {
         const data = await api(`/api/games/${id}`);
         const g = data.game;
+        const prevGame = gameRef.current;
+
         setGame(g);
-        if (!silent) {
-          setWhiteMs(getLiveClock(g, "w"));
-          setBlackMs(getLiveClock(g, "b"));
-        } else {
-          setWhiteMs(getLiveClock(g, "w"));
-          setBlackMs(getLiveClock(g, "b"));
-        }
+        setWhiteMs(getLiveClock(g, "w"));
+        setBlackMs(getLiveClock(g, "b"));
+
         if (g.moves?.length > 0) {
-          setLastMove({
-            from: g.moves[g.moves.length - 1]?.from,
-            to: g.moves[g.moves.length - 1]?.to,
-          });
+          const last = g.moves[g.moves.length - 1];
+          setLastMove({ from: last.from, to: last.to });
         }
-        setMoveIndex(g.moves?.length - 1 ?? -1);
-        setViewFen(null);
+
+        // Only update moveIndex if not browsing history
+        setMoveIndex((idx) => {
+          const live = g.moves?.length - 1 ?? -1;
+          if (viewFen === null) return live; // stay at live end
+          return idx; // keep user's position
+        });
+
+        // Detect incoming draw offer
+        if (!silent && g.drawOffer && prevGame && !prevGame.drawOffer) {
+          const offererColor = g.drawOffer;
+          const offererName = offererColor === "w" ? g.whiteName : g.blackName;
+          const myColor =
+            g.whiteId === user.id ? "w" : g.blackId === user.id ? "b" : null;
+          if (myColor && myColor !== offererColor) {
+            notify("info", `${offererName} offers a draw.`, 8000);
+          }
+        }
+
+        // Clear premove if it was played or game ended
+        setPremove((prev) => {
+          if (!prev) return null;
+          if (g.status !== "active") return null;
+          return prev;
+        });
       } catch (err) {
         if (!silent) setError(err.message);
       }
     },
-    [id],
+    [id, user.id, viewFen],
   );
 
   useEffect(() => {
     load();
-    const iv = setInterval(() => load(true), 1500);
+    const iv = setInterval(() => load(true), 1200);
     return () => clearInterval(iv);
   }, [load]);
 
-  // ── Compute legal moves for selected square ──
-  const computeLegal = useCallback((fen, square) => {
-    if (!fen || fen === "start") return {};
-    try {
-      const chess = new Chess(fen === "start" ? undefined : fen);
-      const moves = chess.moves({ square, verbose: true });
-      const map = {};
-      for (const m of moves) {
-        map[m.to] = {
-          background:
-            "radial-gradient(circle, rgba(201,168,76,0.6) 25%, transparent 26%)",
-          borderRadius: "50%",
-        };
-      }
-      return map;
-    } catch {
-      return {};
-    }
-  }, []);
+  // ── Execute premove when it's our turn ──
+  useEffect(() => {
+    if (!premove || !game || !canPlay) return;
+    const pm = premove;
+    setPremove(null);
+    executeMove(pm.from, pm.to, "q");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game?.activeColor, game?.moves?.length]);
 
+  // ── Keyboard nav ──
+  useEffect(() => {
+    function onKey(e) {
+      if (!game?.moves) return;
+      if (e.key === "ArrowLeft") goToMove(moveIndex - 1);
+      if (e.key === "ArrowRight") goToMove(moveIndex + 1);
+      if (e.key === "ArrowUp") goToMove(0);
+      if (e.key === "ArrowDown") goToLive();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [moveIndex, game]);
+
+  // ── Derived ──
   const myColor = useMemo(() => {
     if (!game || user.role !== "student") return null;
     if (game.whiteId === user.id) return "w";
@@ -1956,132 +2044,248 @@ function GamePage({ user }) {
 
   const canPlay = useMemo(
     () =>
-      user.role === "student" &&
+      !!myColor &&
       game?.status === "active" &&
-      ((game.activeColor === "w" && game.whiteId === user.id) ||
-        (game.activeColor === "b" && game.blackId === user.id)),
-    [game, user],
+      game?.activeColor === myColor &&
+      viewFen === null,
+    [myColor, game, viewFen],
   );
 
   const isViewingHistory = viewFen !== null;
-  const displayFen = viewFen || game?.fen || "start";
+  const displayFen =
+    viewFen ??
+    (game?.fen === "start"
+      ? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+      : game?.fen) ??
+    "start";
 
-  // ── Custom square styles (highlights + legal moves) ──
+  const captured = useMemo(
+    () => getCapturedPieces(game?.moves || []),
+    [game?.moves],
+  );
+  const material = useMemo(() => getMaterialAdvantage(captured), [captured]);
+
+  const boardOrientation = myColor === "b" ? "black" : "white";
+
+  const topColor = boardOrientation === "white" ? "b" : "w";
+  const bottomColor = boardOrientation === "white" ? "w" : "b";
+
+  const topPlayer = {
+    name: topColor === "w" ? game?.whiteName : game?.blackName,
+    color: topColor,
+    ms: topColor === "w" ? whiteMs : blackMs,
+    active: game?.activeColor === topColor && game?.status === "active",
+    captured: captured[topColor === "w" ? "b" : "w"], // pieces opponent captured = pieces we lost
+    material: topColor === "w" ? material.white : material.black,
+  };
+  const bottomPlayer = {
+    name: bottomColor === "w" ? game?.whiteName : game?.blackName,
+    color: bottomColor,
+    ms: bottomColor === "w" ? whiteMs : blackMs,
+    active: game?.activeColor === bottomColor && game?.status === "active",
+    captured: captured[bottomColor === "w" ? "b" : "w"],
+    material: bottomColor === "w" ? material.white : material.black,
+  };
+
+  // ── Custom square styles ──
   const customSquareStyles = useMemo(() => {
-    const styles = {};
-    if (lastMove) {
-      styles[lastMove.from] = { background: "rgba(201,168,76,0.25)" };
-      styles[lastMove.to] = { background: "rgba(201,168,76,0.35)" };
+    const s = {};
+    if (lastMove && !isViewingHistory) {
+      s[lastMove.from] = { background: "rgba(172,140,60,0.35)" };
+      s[lastMove.to] = { background: "rgba(172,140,60,0.5)" };
     }
-    if (selectedSquare) {
-      styles[selectedSquare] = { background: "rgba(201,168,76,0.5)" };
+    if (selectedSq) {
+      s[selectedSq] = { background: "rgba(201,168,76,0.6)" };
     }
-    Object.entries(legalMoves).forEach(([sq, style]) => {
-      styles[sq] = style;
-    });
+    Object.assign(s, legalDots);
     if (premove) {
-      styles[premove.from] = { background: "rgba(120,80,200,0.4)" };
-      styles[premove.to] = { background: "rgba(120,80,200,0.4)" };
+      s[premove.from] = { background: "rgba(110,60,210,0.45)" };
+      s[premove.to] = { background: "rgba(110,60,210,0.55)" };
     }
-    return styles;
-  }, [lastMove, selectedSquare, legalMoves, premove]);
+    // highlight king in check
+    if (game && game.status === "active" && !isViewingHistory) {
+      try {
+        const chess = new Chess(game.fen === "start" ? undefined : game.fen);
+        if (chess.inCheck()) {
+          const board = chess.board();
+          for (const row of board) {
+            for (const sq of row) {
+              if (sq && sq.type === "k" && sq.color === chess.turn()) {
+                const file = "abcdefgh"[
+                  sq.square ? sq.square.charCodeAt(0) - 97 : 0
+                ];
+                s[sq.square] = {
+                  background:
+                    "radial-gradient(circle, rgba(239,68,68,0.8) 40%, rgba(239,68,68,0.2) 70%, transparent)",
+                };
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+    return s;
+  }, [lastMove, selectedSq, legalDots, premove, game, isViewingHistory]);
 
-  // ── Handle square click (click-to-move) ──
+  // ── Compute legal move dots ──
+  function computeLegalDots(fen, square) {
+    try {
+      const chess = new Chess(fen === "start" ? undefined : fen);
+      const moves = chess.moves({ square, verbose: true });
+      const map = {};
+      for (const m of moves) {
+        const isCapture = !!m.captured;
+        map[m.to] = isCapture
+          ? {
+              background:
+                "radial-gradient(circle, transparent 58%, rgba(201,168,76,0.65) 58%)",
+            }
+          : {
+              background:
+                "radial-gradient(circle, rgba(201,168,76,0.55) 26%, transparent 27%)",
+            };
+      }
+      return map;
+    } catch {
+      return {};
+    }
+  }
+
+  // ── Click to move ──
   function onSquareClick(square) {
-    if (!canPlay || isViewingHistory || isMoving) return;
+    if (isViewingHistory) return;
+
+    // Not your turn → set premove
+    if (!canPlay && myColor && game?.status === "active") {
+      if (selectedSq && selectedSq !== square) {
+        setPremove({ from: selectedSq, to: square });
+        setSelectedSq(null);
+        setLegalDots({});
+        notify("info", "Premove set — will play when it's your turn.", 2000);
+        return;
+      }
+      setSelectedSq(square);
+      return;
+    }
+
+    if (!canPlay) return;
+    if (isMoving) return;
 
     const chess = new Chess(game.fen === "start" ? undefined : game.fen);
     const piece = chess.get(square);
 
-    if (selectedSquare) {
-      // try to move
-      if (legalMoves[square] !== undefined) {
-        const movePiece = chess.get(selectedSquare);
+    if (selectedSq) {
+      if (legalDots[square] !== undefined) {
+        // check promotion
+        const p = chess.get(selectedSq);
         if (
-          movePiece?.type === "p" &&
+          p?.type === "p" &&
           ((myColor === "w" && square[1] === "8") ||
             (myColor === "b" && square[1] === "1"))
         ) {
-          setPromotionSquare({ from: selectedSquare, to: square });
-        } else {
-          executeMove(selectedSquare, square, "q");
+          setPromoData({ from: selectedSq, to: square });
+          setSelectedSq(null);
+          setLegalDots({});
+          return;
         }
-        setSelectedSquare(null);
-        setLegalMoves({});
+        executeMove(selectedSq, square, "q");
+        setSelectedSq(null);
+        setLegalDots({});
       } else if (piece && piece.color === myColor) {
-        setSelectedSquare(square);
-        setLegalMoves(computeLegal(game.fen, square));
+        setSelectedSq(square);
+        setLegalDots(computeLegalDots(game.fen, square));
       } else {
-        setSelectedSquare(null);
-        setLegalMoves({});
+        setSelectedSq(null);
+        setLegalDots({});
       }
     } else {
       if (piece && piece.color === myColor) {
-        setSelectedSquare(square);
-        setLegalMoves(computeLegal(game.fen, square));
+        setSelectedSq(square);
+        setLegalDots(computeLegalDots(game.fen, square));
       }
     }
   }
 
-  // ── Handle drag ──
-  async function onDrop(from, to) {
-    if (!canPlay || isViewingHistory || isMoving) return false;
-    const chess = new Chess(game.fen === "start" ? undefined : game.fen);
-    const piece = chess.get(from);
-    if (
-      piece?.type === "p" &&
-      ((myColor === "w" && to[1] === "8") || (myColor === "b" && to[1] === "1"))
-    ) {
-      setPromotionSquare({ from, to });
+  // ── Drag ──
+  function onDragStart(piece, square) {
+    if (!canPlay && !(!canPlay && myColor && game?.status === "active"))
       return false;
+    if (piece[0] !== myColor) return false;
+    if (canPlay) {
+      setSelectedSq(square);
+      setLegalDots(computeLegalDots(game.fen, square));
     }
-    return await executeMove(from, to, "q");
+    return true;
   }
 
+  async function onDrop(from, to) {
+    setSelectedSq(null);
+    setLegalDots({});
+
+    // Premove
+    if (!canPlay && myColor && game?.status === "active") {
+      setPremove({ from, to });
+      notify("info", "Premove set.", 1500);
+      return true; // return true to allow the visual snap-back correctly
+    }
+
+    if (!canPlay || isMoving) return false;
+
+    const chess = new Chess(game.fen === "start" ? undefined : game.fen);
+    const p = chess.get(from);
+    if (
+      p?.type === "p" &&
+      ((myColor === "w" && to[1] === "8") || (myColor === "b" && to[1] === "1"))
+    ) {
+      setPromoData({ from, to });
+      return false;
+    }
+    return executeMove(from, to, "q");
+  }
+
+  // ── Execute move ──
   async function executeMove(from, to, promotion) {
     if (isMoving) return false;
+    if (!game || game.status !== "active") return false;
     setIsMoving(true);
-    setSelectedSquare(null);
-    setLegalMoves({});
-    setPromotionSquare(null);
 
-    // Optimistic local update
+    // Optimistic update
     try {
       const chess = new Chess(game.fen === "start" ? undefined : game.fen);
-      const moveResult = chess.move({ from, to, promotion });
-      if (!moveResult) {
+      const result = chess.move({ from, to, promotion });
+      if (!result) {
         playMoveSound("illegal");
         setIsMoving(false);
         return false;
       }
 
-      const soundType = moveResult.captured
-        ? "capture"
-        : chess.inCheck()
-          ? "check"
-          : "move";
-      playMoveSound(soundType);
+      playMoveSound(
+        result.captured ? "capture" : chess.inCheck() ? "check" : "move",
+      );
 
-      const optimisticGame = {
+      const optimistic = {
         ...game,
         fen: chess.fen(),
+        clockStarted: true,
         moves: [
           ...(game.moves || []),
           {
-            san: moveResult.san,
+            san: result.san,
             from,
             to,
-            color: moveResult.color,
+            color: result.color,
+            captured: result.captured || null,
+            promotion: result.promotion || null,
+            flags: result.flags,
             at: new Date().toISOString(),
-            captured: moveResult.captured,
           },
         ],
         activeColor: chess.turn(),
         lastMoveAt: new Date().toISOString(),
       };
-      setGame(optimisticGame);
+      setGame(optimistic);
       setLastMove({ from, to });
-      setMoveIndex(optimisticGame.moves.length - 1);
+      setMoveIndex(optimistic.moves.length - 1);
 
       const data = await api(`/api/games/${id}/move`, {
         method: "POST",
@@ -2095,110 +2299,156 @@ function GamePage({ user }) {
     } catch (err) {
       playMoveSound("illegal");
       setError(err.message);
+      setTimeout(() => setError(""), 3000);
       load(true);
       setIsMoving(false);
       return false;
     }
   }
 
+  // ── Actions ──
   async function resign() {
+    setResignConfirm(false);
     try {
-      setShowResignConfirm(false);
       const data = await api(`/api/games/${id}/resign`, { method: "POST" });
       setGame(data.game);
-      setMessage("You resigned the game.");
+      notify("info", "You resigned.");
     } catch (err) {
-      setError(err.message);
+      notify("error", err.message);
     }
   }
 
-  function handleMoveHistoryClick(index) {
+  async function offerDraw() {
+    try {
+      await api(`/api/games/${id}/offer-draw`, { method: "POST" });
+      setDrawSent(true);
+      notify("info", "Draw offer sent.");
+      setTimeout(() => setDrawSent(false), 10000);
+    } catch (err) {
+      notify("error", err.message);
+    }
+  }
+
+  async function acceptDraw() {
+    try {
+      const data = await api(`/api/games/${id}/accept-draw`, {
+        method: "POST",
+      });
+      setGame(data.game);
+    } catch (err) {
+      notify("error", err.message);
+    }
+  }
+
+  async function declineDraw() {
+    try {
+      await api(`/api/games/${id}/decline-draw`, { method: "POST" });
+      setGame((g) => (g ? { ...g, drawOffer: null } : g));
+    } catch (err) {
+      notify("error", err.message);
+    }
+  }
+
+  async function abortGame() {
+    try {
+      const data = await api(`/api/games/${id}/abort`, { method: "POST" });
+      setGame(data.game);
+      notify("info", "Game aborted.");
+    } catch (err) {
+      notify("error", err.message);
+    }
+  }
+
+  // ── History nav ──
+  function goToMove(index) {
     if (!game?.moves) return;
-    if (index >= game.moves.length - 1) {
-      setViewFen(null);
-      setMoveIndex(game.moves.length - 1);
+    const clamped = Math.max(-1, Math.min(game.moves.length - 1, index));
+    if (
+      clamped === game.moves.length - 1 ||
+      (clamped === -1 && game.moves.length === 0)
+    ) {
+      goToLive();
       return;
     }
-    // Replay to that position
+    if (clamped < 0) {
+      setViewFen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+      setMoveIndex(-1);
+      return;
+    }
     const chess = new Chess();
-    for (let i = 0; i <= index; i++) {
+    for (let i = 0; i <= clamped; i++) {
       const m = game.moves[i];
       try {
-        chess.move({ from: m.from, to: m.to, promotion: "q" });
+        chess.move({ from: m.from, to: m.to, promotion: m.promotion || "q" });
       } catch {}
     }
     setViewFen(chess.fen());
-    setMoveIndex(index);
+    setMoveIndex(clamped);
   }
 
   function goToLive() {
     setViewFen(null);
-    setMoveIndex(game?.moves?.length - 1 ?? -1);
+    setMoveIndex(game?.moves?.length ? game.moves.length - 1 : -1);
   }
 
+  // ── Promotion confirm ──
+  function confirmPromotion(piece) {
+    if (!promoData) return;
+    const { from, to } = promoData;
+    setPromoData(null);
+    setPromoPiece("q");
+    executeMove(from, to, piece);
+  }
+
+  // ── Draw offer from opponent ──
+  const pendingDrawFromOpponent = useMemo(() => {
+    if (!game || !myColor || !game.drawOffer) return false;
+    return game.drawOffer !== myColor;
+  }, [game, myColor]);
+
+  // ── Loading ──
   if (!game) {
     return (
       <div
         style={{
           display: "flex",
+          flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
-          height: 300,
-          color: "#4a4a5a",
-          fontFamily: "JetBrains Mono, monospace",
+          height: 400,
+          gap: 16,
         }}
       >
-        {error ? <Alert type="error">{error}</Alert> : "Loading game…"}
+        {error ? (
+          <div
+            style={{
+              padding: "12px 20px",
+              background: "rgba(127,29,29,0.3)",
+              border: "1px solid rgba(239,68,68,0.3)",
+              color: "#fca5a5",
+              borderRadius: 8,
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 14,
+            }}
+          >
+            {error}
+          </div>
+        ) : (
+          <div
+            style={{
+              color: "#3a3a4a",
+              fontFamily: "JetBrains Mono, monospace",
+              fontSize: 13,
+            }}
+          >
+            Loading game…
+          </div>
+        )}
       </div>
     );
   }
 
-  const captured = getCapturedPieces(game.moves || []);
-  const material = getMaterialAdvantage(captured);
-  const activeWWhite = game.activeColor === "w" && game.status === "active";
-  const activeWBlack = game.activeColor === "b" && game.status === "active";
-  const boardOrientation = myColor === "b" ? "black" : "white";
-
-  // top player from board orientation = opponent, bottom = me
-  const topPlayer =
-    boardOrientation === "white"
-      ? {
-          name: game.blackName,
-          color: "b",
-          ms: blackMs,
-          active: activeWBlack,
-          captured: captured.b,
-          material: material.black,
-        }
-      : {
-          name: game.whiteName,
-          color: "w",
-          ms: whiteMs,
-          active: activeWWhite,
-          captured: captured.w,
-          material: material.white,
-        };
-
-  const bottomPlayer =
-    boardOrientation === "white"
-      ? {
-          name: game.whiteName,
-          color: "w",
-          ms: whiteMs,
-          active: activeWWhite,
-          captured: captured.w,
-          material: material.white,
-        }
-      : {
-          name: game.blackName,
-          color: "b",
-          ms: blackMs,
-          active: activeWBlack,
-          captured: captured.b,
-          material: material.black,
-        };
-
-  const resultMsg =
+  const resultLabel =
     game.result === "1-0"
       ? `${game.whiteName} wins`
       : game.result === "0-1"
@@ -2207,89 +2457,120 @@ function GamePage({ user }) {
           ? "Draw"
           : "";
 
+  const canAbort =
+    game.status === "active" &&
+    (!game.moves || game.moves.length === 0) &&
+    myColor;
+  const canResign = game.status === "active" && myColor;
+  const canOfferDraw =
+    game.status === "active" && myColor && !drawSent && !game.drawOffer;
+
   return (
     <div
-      className="animate-in"
       style={{
-        display: "grid",
-        gridTemplateColumns: "min-content 1fr",
-        gap: 24,
-        alignItems: "start",
-        maxWidth: 1100,
+        display: "flex",
+        gap: 20,
+        alignItems: "flex-start",
+        maxWidth: 1140,
       }}
     >
-      {/* ── BOARD COLUMN ── */}
+      {/* ══ BOARD COLUMN ══ */}
       <div
         style={{
           display: "flex",
           flexDirection: "column",
-          gap: 8,
-          minWidth: 520,
+          gap: 6,
+          flexShrink: 0,
         }}
       >
-        {/* Top player */}
-        <div className={`player-bar${topPlayer.active ? " active-turn" : ""}`}>
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 600, color: "#e8e6e3" }}>
-              {topPlayer.color === "w" ? "⬜" : "⬛"} {topPlayer.name}
-              {topPlayer.material > 0 && (
-                <span
-                  style={{
-                    fontSize: 12,
-                    color: "#c9a84c",
-                    marginLeft: 8,
-                    fontFamily: "JetBrains Mono, monospace",
-                  }}
-                >
-                  +{topPlayer.material}
-                </span>
-              )}
-            </div>
-            <CapturedPieces
-              pieces={topPlayer.captured}
-              color={topPlayer.color}
-            />
-          </div>
-          <Clock
-            ms={topPlayer.ms}
-            active={topPlayer.active}
-            label={topPlayer.active ? "Your turn" : ""}
-          />
-        </div>
+        {/* Top player bar */}
+        <PlayerBar
+          player={topPlayer}
+          isActive={topPlayer.active && !isViewingHistory}
+        />
 
-        {/* Board */}
-        <div
-          style={{
-            position: "relative",
-            borderRadius: 8,
-            overflow: "hidden",
-            border: "2px solid rgba(255,255,255,0.08)",
-            boxShadow: "0 24px 64px rgba(0,0,0,0.6)",
-          }}
-        >
+        {/* Board wrapper */}
+        <div style={{ position: "relative" }}>
+          {/* Notifications strip */}
+          {notification && (
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                zIndex: 30,
+                padding: "8px 16px",
+                textAlign: "center",
+                fontFamily: "JetBrains Mono, monospace",
+                fontSize: 12,
+                fontWeight: 600,
+                background:
+                  notification.type === "error"
+                    ? "rgba(127,29,29,0.95)"
+                    : notification.type === "info"
+                      ? "rgba(30,58,138,0.95)"
+                      : "rgba(20,83,45,0.95)",
+                color:
+                  notification.type === "error"
+                    ? "#fca5a5"
+                    : notification.type === "info"
+                      ? "#93c5fd"
+                      : "#86efac",
+                borderBottom: "1px solid rgba(255,255,255,0.1)",
+              }}
+            >
+              {notification.text}
+            </div>
+          )}
+
+          {/* History banner */}
           {isViewingHistory && (
             <div
               style={{
                 position: "absolute",
-                top: 8,
+                bottom: 8,
                 left: "50%",
                 transform: "translateX(-50%)",
-                zIndex: 20,
-                background: "rgba(201,168,76,0.9)",
+                zIndex: 25,
+                background: "rgba(201,168,76,0.95)",
                 color: "#0a0a0f",
-                padding: "4px 14px",
+                padding: "4px 16px",
                 borderRadius: 20,
-                fontSize: 12,
                 fontFamily: "JetBrains Mono, monospace",
+                fontSize: 11,
                 fontWeight: 700,
+                letterSpacing: "0.08em",
+                whiteSpace: "nowrap",
               }}
             >
-              REVIEWING HISTORY
+              ← BROWSING HISTORY · ↓ LIVE
             </div>
           )}
+
+          {/* Result overlay */}
           {game.status === "finished" && !isViewingHistory && (
-            <div className="result-overlay">
-              <div style={{ fontSize: 40, marginBottom: 8 }}>
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                zIndex: 20,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "rgba(0,0,0,0.72)",
+                backdropFilter: "blur(6px)",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 64,
+                  lineHeight: 1,
+                  color: "#e8e6e3",
+                  fontWeight: 700,
+                }}
+              >
                 {game.result === "1/2-1/2"
                   ? "½–½"
                   : game.result === "1-0"
@@ -2298,288 +2579,409 @@ function GamePage({ user }) {
               </div>
               <div
                 style={{
-                  fontSize: 20,
+                  fontSize: 22,
                   fontWeight: 600,
                   color: "#e8e6e3",
-                  marginBottom: 6,
+                  marginTop: 10,
                 }}
               >
-                {resultMsg}
+                {resultLabel}
               </div>
               <div
                 style={{
                   fontSize: 13,
                   color: "#6b6b7a",
                   fontFamily: "JetBrains Mono, monospace",
+                  marginTop: 6,
                 }}
               >
                 by {game.finishReason}
               </div>
             </div>
           )}
+
+          {/* Draw offer popup */}
+          {pendingDrawFromOpponent && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                zIndex: 28,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "rgba(0,0,0,0.78)",
+                backdropFilter: "blur(4px)",
+              }}
+            >
+              <div style={{ fontSize: 32, marginBottom: 10 }}>🤝</div>
+              <div
+                style={{
+                  fontSize: 18,
+                  fontWeight: 600,
+                  color: "#e8e6e3",
+                  marginBottom: 6,
+                }}
+              >
+                Draw offered
+              </div>
+              <div
+                style={{
+                  fontSize: 13,
+                  color: "#94a3b8",
+                  fontFamily: "JetBrains Mono, monospace",
+                  marginBottom: 20,
+                }}
+              >
+                {game.drawOffer === "w" ? game.whiteName : game.blackName}{" "}
+                offers a draw
+              </div>
+              <div style={{ display: "flex", gap: 12 }}>
+                <button
+                  onClick={acceptDraw}
+                  style={{
+                    padding: "10px 24px",
+                    background: "#166534",
+                    border: "1px solid #15803d",
+                    borderRadius: 6,
+                    color: "#86efac",
+                    fontFamily: "JetBrains Mono, monospace",
+                    fontWeight: 700,
+                    fontSize: 13,
+                    cursor: "pointer",
+                  }}
+                >
+                  Accept
+                </button>
+                <button
+                  onClick={declineDraw}
+                  style={{
+                    padding: "10px 24px",
+                    background: "#7f1d1d",
+                    border: "1px solid #991b1b",
+                    borderRadius: 6,
+                    color: "#fca5a5",
+                    fontFamily: "JetBrains Mono, monospace",
+                    fontWeight: 700,
+                    fontSize: 13,
+                    cursor: "pointer",
+                  }}
+                >
+                  Decline
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Promotion picker */}
+          {promoData && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                zIndex: 28,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "rgba(0,0,0,0.82)",
+                backdropFilter: "blur(4px)",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 14,
+                  fontFamily: "JetBrains Mono, monospace",
+                  color: "#6b6b7a",
+                  marginBottom: 14,
+                  letterSpacing: "0.1em",
+                  textTransform: "uppercase",
+                }}
+              >
+                Promote to
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {(myColor === "w"
+                  ? [
+                      ["q", "♕"],
+                      ["r", "♖"],
+                      ["b", "♗"],
+                      ["n", "♘"],
+                    ]
+                  : [
+                      ["q", "♛"],
+                      ["r", "♜"],
+                      ["b", "♝"],
+                      ["n", "♞"],
+                    ]
+                ).map(([p, sym]) => (
+                  <button
+                    key={p}
+                    onClick={() => confirmPromotion(p)}
+                    style={{
+                      width: 72,
+                      height: 72,
+                      fontSize: 44,
+                      lineHeight: 1,
+                      background: "rgba(255,255,255,0.08)",
+                      border: "2px solid rgba(255,255,255,0.15)",
+                      borderRadius: 8,
+                      cursor: "pointer",
+                      color: "#e8e6e3",
+                      transition: "all 0.15s",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = "rgba(201,168,76,0.2)";
+                      e.currentTarget.style.borderColor = "#c9a84c";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background =
+                        "rgba(255,255,255,0.08)";
+                      e.currentTarget.style.borderColor =
+                        "rgba(255,255,255,0.15)";
+                    }}
+                  >
+                    {sym}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => setPromoData(null)}
+                style={{
+                  marginTop: 16,
+                  fontSize: 12,
+                  fontFamily: "JetBrains Mono, monospace",
+                  color: "#4a4a5a",
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
           <Chessboard
             id="main-board"
-            position={displayFen === "start" ? "start" : displayFen}
+            position={displayFen}
             onPieceDrop={onDrop}
             onSquareClick={onSquareClick}
+            onPieceDragBegin={onDragStart}
             boardOrientation={boardOrientation}
-            arePiecesDraggable={canPlay && !isViewingHistory}
+            arePiecesDraggable={!!myColor && game.status === "active"}
             customSquareStyles={customSquareStyles}
-            boardWidth={520}
+            boardWidth={580}
             customDarkSquareStyle={{ backgroundColor: "#b58863" }}
             customLightSquareStyle={{ backgroundColor: "#f0d9b5" }}
-            animationDuration={100}
+            animationDuration={80}
             showBoardNotation={true}
           />
         </div>
 
-        {/* Bottom player */}
-        <div
-          className={`player-bar${bottomPlayer.active ? " active-turn" : ""}`}
-        >
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 600, color: "#e8e6e3" }}>
-              {bottomPlayer.color === "w" ? "⬜" : "⬛"} {bottomPlayer.name}
-              {bottomPlayer.material > 0 && (
-                <span
-                  style={{
-                    fontSize: 12,
-                    color: "#c9a84c",
-                    marginLeft: 8,
-                    fontFamily: "JetBrains Mono, monospace",
-                  }}
-                >
-                  +{bottomPlayer.material}
-                </span>
-              )}
-            </div>
-            <CapturedPieces
-              pieces={bottomPlayer.captured}
-              color={bottomPlayer.color}
-            />
-          </div>
-          <Clock
-            ms={bottomPlayer.ms}
-            active={bottomPlayer.active}
-            label={bottomPlayer.active ? "Your turn" : ""}
-          />
-        </div>
+        {/* Bottom player bar */}
+        <PlayerBar
+          player={bottomPlayer}
+          isActive={bottomPlayer.active && !isViewingHistory}
+        />
 
-        {/* Controls */}
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {user.role === "student" &&
-            game.status === "active" &&
-            (showResignConfirm ? (
-              <>
-                <span
-                  style={{
-                    fontSize: 13,
-                    fontFamily: "JetBrains Mono, monospace",
-                    color: "#fca5a5",
-                  }}
-                >
-                  Resign?
-                </span>
-                <button onClick={resign} className="btn btn-danger">
-                  Yes, Resign
-                </button>
-                <button
-                  onClick={() => setShowResignConfirm(false)}
-                  className="btn btn-ghost"
-                >
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <button
-                onClick={() => setShowResignConfirm(true)}
-                className="btn btn-ghost"
+        {/* Action buttons */}
+        <div
+          style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}
+        >
+          {canAbort && (
+            <button onClick={abortGame} style={btnStyle("ghost")}>
+              Abort
+            </button>
+          )}
+          {canResign && !resignConfirm && (
+            <button
+              onClick={() => setResignConfirm(true)}
+              style={btnStyle(
+                "ghost",
+                "rgba(252,165,165,0.9)",
+                "rgba(252,165,165,0.15)",
+              )}
+            >
+              ⚑ Resign
+            </button>
+          )}
+          {resignConfirm && (
+            <>
+              <span
                 style={{
+                  fontSize: 12,
+                  fontFamily: "JetBrains Mono, monospace",
                   color: "#fca5a5",
-                  borderColor: "rgba(252,165,165,0.2)",
+                  alignSelf: "center",
                 }}
               >
-                ⚑ Resign
+                Confirm?
+              </span>
+              <button onClick={resign} style={btnStyle("danger")}>
+                Yes, Resign
               </button>
-            ))}
+              <button
+                onClick={() => setResignConfirm(false)}
+                style={btnStyle("ghost")}
+              >
+                Cancel
+              </button>
+            </>
+          )}
+          {canOfferDraw && (
+            <button onClick={offerDraw} style={btnStyle("ghost")}>
+              ½ Offer Draw
+            </button>
+          )}
+          {drawSent && (
+            <span
+              style={{
+                fontSize: 12,
+                fontFamily: "JetBrains Mono, monospace",
+                color: "#94a3b8",
+                alignSelf: "center",
+              }}
+            >
+              Draw offered…
+            </span>
+          )}
           {isViewingHistory && (
             <button
               onClick={goToLive}
-              className="btn btn-primary"
-              style={{ marginLeft: "auto" }}
+              style={{ ...btnStyle("primary"), marginLeft: "auto" }}
             >
-              ▶ Back to Live
+              ▶ Live
             </button>
+          )}
+          {error && (
+            <span
+              style={{
+                fontSize: 12,
+                fontFamily: "JetBrains Mono, monospace",
+                color: "#fca5a5",
+                alignSelf: "center",
+              }}
+            >
+              {error}
+            </span>
           )}
         </div>
       </div>
 
-      {/* ── SIDEBAR ── */}
+      {/* ══ SIDEBAR ══ */}
       <div
         style={{
           display: "flex",
           flexDirection: "column",
-          gap: 14,
-          minWidth: 280,
-          maxWidth: 360,
+          gap: 12,
+          width: 300,
+          flexShrink: 0,
         }}
       >
-        {/* Status */}
-        {(message || error) && (
-          <div>
-            {message && <Alert type="success">{message}</Alert>}
-            {error && <Alert type="error">{error}</Alert>}
-          </div>
-        )}
-
-        {/* Game info */}
-        <div className="card">
+        {/* Game header */}
+        <div
+          style={{
+            background: "#111118",
+            border: "1px solid rgba(255,255,255,0.08)",
+            borderRadius: 10,
+            overflow: "hidden",
+          }}
+        >
           <div
             style={{
-              padding: "12px 16px",
-              borderBottom: "1px solid rgba(255,255,255,0.07)",
+              padding: "14px 16px",
+              borderBottom: "1px solid rgba(255,255,255,0.06)",
             }}
           >
-            <div style={{ fontSize: 16, fontWeight: 600, color: "#e8e6e3" }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "#e8e6e3" }}>
               {game.tournamentName}
             </div>
             <div
               style={{
-                fontSize: 12,
+                fontSize: 11,
                 fontFamily: "JetBrains Mono, monospace",
                 color: "#6b6b7a",
                 marginTop: 3,
               }}
             >
               Round {game.round} · {game.timeControl}
+              {user.role === "admin" && " · Admin view"}
             </div>
           </div>
           <div
             style={{
               padding: "10px 16px",
               display: "flex",
-              gap: 8,
+              gap: 6,
               flexWrap: "wrap",
             }}
           >
             <span
-              className={`badge ${game.status === "active" ? "badge-green" : "badge-slate"}`}
+              style={{
+                ...badgeStyle,
+                ...(game.status === "active" ? badgeGreen : badgeSlate),
+              }}
             >
               {game.status}
             </span>
             {game.result && (
-              <span className="badge badge-gold">{game.result}</span>
+              <span style={{ ...badgeStyle, ...badgeGold }}>{game.result}</span>
             )}
-            <span className="badge badge-slate">
-              {game.activeColor === "w" ? "White to move" : "Black to move"}
+            <span style={{ ...badgeStyle, ...badgeSlate }}>
+              {game.activeColor === "w" ? "White" : "Black"} to move
             </span>
-            {canPlay && !isViewingHistory && (
-              <span className="badge badge-blue">Your turn</span>
-            )}
           </div>
           {game.status === "finished" && (
             <div
               style={{
                 padding: "10px 16px",
-                borderTop: "1px solid rgba(255,255,255,0.07)",
+                borderTop: "1px solid rgba(255,255,255,0.06)",
                 fontSize: 13,
                 fontFamily: "JetBrains Mono, monospace",
                 color: "#c9a84c",
               }}
             >
-              {resultMsg} · {game.finishReason}
+              {resultLabel} · {game.finishReason}
             </div>
           )}
           <div
             style={{
               padding: "8px 16px",
-              borderTop: "1px solid rgba(255,255,255,0.07)",
-              fontSize: 12,
+              borderTop: "1px solid rgba(255,255,255,0.06)",
+              fontSize: 11,
               fontFamily: "JetBrains Mono, monospace",
-              color: "#6b6b7a",
+              color: "#4a4a5a",
             }}
           >
             {user.role === "admin"
-              ? "👁 Spectating"
+              ? "👁 Spectating all games"
               : myColor === "w"
                 ? "You play White"
                 : myColor === "b"
                   ? "You play Black"
                   : "Observer"}
+            {canPlay && " · YOUR TURN"}
           </div>
         </div>
 
-        {/* Promotion selector */}
-        {promotionSquare && (
-          <div className="card" style={{ padding: 16 }}>
-            <div
-              style={{
-                fontSize: 12,
-                fontFamily: "JetBrains Mono, monospace",
-                color: "#6b6b7a",
-                marginBottom: 10,
-                textTransform: "uppercase",
-                letterSpacing: "0.08em",
-              }}
-            >
-              Promote pawn to
-            </div>
-            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              {["q", "r", "b", "n"].map((p) => (
-                <button
-                  key={p}
-                  onClick={() => setPromotionPiece(p)}
-                  style={{
-                    flex: 1,
-                    padding: "10px 0",
-                    borderRadius: 6,
-                    border: `2px solid ${promotionPiece === p ? "#c9a84c" : "rgba(255,255,255,0.1)"}`,
-                    background:
-                      promotionPiece === p
-                        ? "rgba(201,168,76,0.15)"
-                        : "transparent",
-                    fontSize: 22,
-                    cursor: "pointer",
-                    color: "#e8e6e3",
-                    transition: "all 0.15s",
-                  }}
-                >
-                  {myColor === "w"
-                    ? { q: "♕", r: "♖", b: "♗", n: "♘" }[p]
-                    : { q: "♛", r: "♜", b: "♝", n: "♞" }[p]}
-                </button>
-              ))}
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                onClick={() =>
-                  executeMove(
-                    promotionSquare.from,
-                    promotionSquare.to,
-                    promotionPiece,
-                  )
-                }
-                className="btn btn-primary"
-                style={{ flex: 1 }}
-              >
-                Confirm
-              </button>
-              <button
-                onClick={() => setPromotionSquare(null)}
-                className="btn btn-ghost"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Move history */}
-        <div className="card">
+        {/* Move list */}
+        <div
+          style={{
+            background: "#111118",
+            border: "1px solid rgba(255,255,255,0.08)",
+            borderRadius: 10,
+            overflow: "hidden",
+          }}
+        >
           <div
             style={{
-              padding: "12px 16px",
-              borderBottom: "1px solid rgba(255,255,255,0.07)",
+              padding: "10px 14px",
+              borderBottom: "1px solid rgba(255,255,255,0.06)",
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
@@ -2587,65 +2989,66 @@ function GamePage({ user }) {
           >
             <span
               style={{
-                fontSize: 12,
+                fontSize: 11,
                 fontFamily: "JetBrains Mono, monospace",
-                color: "#6b6b7a",
+                color: "#4a4a5a",
                 textTransform: "uppercase",
-                letterSpacing: "0.08em",
+                letterSpacing: "0.1em",
               }}
             >
-              Moves ({game.moves?.length || 0})
+              Moves {game.moves?.length ? `(${game.moves.length})` : ""}
             </span>
-            {isViewingHistory && (
-              <button
-                onClick={goToLive}
-                style={{
-                  fontSize: 11,
-                  fontFamily: "JetBrains Mono, monospace",
-                  color: "#c9a84c",
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                }}
-              >
-                ▶ Live
-              </button>
-            )}
+            <span
+              style={{
+                fontSize: 11,
+                fontFamily: "JetBrains Mono, monospace",
+                color: "#3a3a4a",
+              }}
+            >
+              ← → to navigate
+            </span>
           </div>
-          <div style={{ padding: "8px 12px" }}>
-            <MoveHistory
-              moves={game.moves || []}
-              currentIndex={moveIndex}
-              onSelect={handleMoveHistoryClick}
-            />
-          </div>
-          <div style={{ padding: "0 12px 12px", display: "flex", gap: 4 }}>
+          <MoveHistory
+            moves={game.moves || []}
+            currentIndex={moveIndex}
+            onSelect={goToMove}
+          />
+          <div
+            style={{
+              padding: "6px 8px",
+              borderTop: "1px solid rgba(255,255,255,0.06)",
+              display: "flex",
+              gap: 3,
+            }}
+          >
             {[
-              { label: "⏮", action: () => handleMoveHistoryClick(0) },
-              {
-                label: "◀",
-                action: () =>
-                  handleMoveHistoryClick(Math.max(0, moveIndex - 1)),
-              },
-              {
-                label: "▶",
-                action: () => {
-                  if (moveIndex < game.moves?.length - 1)
-                    handleMoveHistoryClick(moveIndex + 1);
-                  else goToLive();
-                },
-              },
-              { label: "⏭", action: goToLive },
-            ].map(({ label, action }) => (
+              ["⏮", () => goToMove(0)],
+              ["◀", () => goToMove(moveIndex - 1)],
+              ["▶", () => goToMove(moveIndex + 1)],
+              ["⏭", goToLive],
+            ].map(([label, fn]) => (
               <button
                 key={label}
-                onClick={action}
-                className="btn btn-ghost"
+                onClick={fn}
                 style={{
                   flex: 1,
                   padding: "6px 0",
+                  background: "transparent",
+                  border: "1px solid rgba(255,255,255,0.07)",
+                  borderRadius: 5,
+                  color: "#4a4a5a",
                   fontFamily: "JetBrains Mono, monospace",
-                  fontSize: 14,
+                  fontSize: 13,
+                  cursor: "pointer",
+                  transition: "all 0.15s",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.color = "#c9a84c";
+                  e.currentTarget.style.borderColor = "rgba(201,168,76,0.3)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.color = "#4a4a5a";
+                  e.currentTarget.style.borderColor = "rgba(255,255,255,0.07)";
                 }}
               >
                 {label}
@@ -2654,41 +3057,95 @@ function GamePage({ user }) {
           </div>
         </div>
 
-        {/* PGN (finished) */}
-        {game.status === "finished" && game.pgn && (
-          <div className="card">
+        {/* FEN display (live) */}
+        {!isViewingHistory && game.status === "active" && (
+          <div
+            style={{
+              background: "#111118",
+              border: "1px solid rgba(255,255,255,0.08)",
+              borderRadius: 10,
+              padding: "12px 14px",
+            }}
+          >
             <div
               style={{
-                padding: "12px 16px",
-                borderBottom: "1px solid rgba(255,255,255,0.07)",
-                fontSize: 12,
+                fontSize: 10,
                 fontFamily: "JetBrains Mono, monospace",
-                color: "#6b6b7a",
+                color: "#3a3a4a",
                 textTransform: "uppercase",
-                letterSpacing: "0.08em",
+                letterSpacing: "0.1em",
+                marginBottom: 6,
+              }}
+            >
+              FEN
+            </div>
+            <div
+              style={{
+                fontSize: 10,
+                fontFamily: "JetBrains Mono, monospace",
+                color: "#5a5a6a",
+                wordBreak: "break-all",
+                lineHeight: 1.5,
+              }}
+            >
+              {game.fen === "start"
+                ? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+                : game.fen}
+            </div>
+          </div>
+        )}
+
+        {/* PGN */}
+        {game.status === "finished" && game.pgn && (
+          <div
+            style={{
+              background: "#111118",
+              border: "1px solid rgba(255,255,255,0.08)",
+              borderRadius: 10,
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                padding: "10px 14px",
+                borderBottom: "1px solid rgba(255,255,255,0.06)",
+                fontSize: 11,
+                fontFamily: "JetBrains Mono, monospace",
+                color: "#4a4a5a",
+                textTransform: "uppercase",
+                letterSpacing: "0.1em",
               }}
             >
               PGN
             </div>
-            <div style={{ padding: 16, position: "relative" }}>
+            <div style={{ padding: "12px 14px" }}>
               <pre
                 style={{
-                  fontSize: 11,
+                  fontSize: 10,
                   fontFamily: "JetBrains Mono, monospace",
-                  color: "#a09880",
+                  color: "#6b6b7a",
                   whiteSpace: "pre-wrap",
                   wordBreak: "break-all",
-                  maxHeight: 140,
-                  overflowY: "auto",
                   lineHeight: 1.6,
+                  maxHeight: 160,
+                  overflowY: "auto",
+                  margin: 0,
                 }}
               >
                 {game.pgn}
               </pre>
               <button
-                onClick={() => navigator.clipboard?.writeText(game.pgn)}
-                className="btn btn-ghost"
-                style={{ fontSize: 11, padding: "4px 10px", marginTop: 8 }}
+                onClick={() =>
+                  navigator.clipboard
+                    ?.writeText(game.pgn)
+                    .then(() => notify("success", "PGN copied!"))
+                }
+                style={{
+                  ...btnStyle("ghost"),
+                  fontSize: 11,
+                  padding: "5px 12px",
+                  marginTop: 10,
+                }}
               >
                 Copy PGN
               </button>
@@ -2698,6 +3155,114 @@ function GamePage({ user }) {
       </div>
     </div>
   );
+}
+
+// ── Player bar component ──
+function PlayerBar({ player, isActive }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "10px 14px",
+        background: isActive ? "rgba(201,168,76,0.06)" : "#0d0d14",
+        border: `1px solid ${isActive ? "rgba(201,168,76,0.35)" : "rgba(255,255,255,0.07)"}`,
+        borderRadius: 8,
+        transition: "all 0.3s",
+        width: 580,
+        boxSizing: "border-box",
+      }}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 13 }}>
+            {player.color === "w" ? "⬜" : "⬛"}
+          </span>
+          <span style={{ fontSize: 16, fontWeight: 600, color: "#e8e6e3" }}>
+            {player.name}
+          </span>
+          {isActive && (
+            <span
+              style={{
+                fontSize: 10,
+                fontFamily: "JetBrains Mono, monospace",
+                color: "#c9a84c",
+                letterSpacing: "0.08em",
+              }}
+            >
+              TO MOVE
+            </span>
+          )}
+        </div>
+        <CapturedPieces pieces={player.captured} advantage={player.material} />
+      </div>
+      <Clock ms={player.ms} active={isActive} />
+    </div>
+  );
+}
+
+// ── Style helpers ──
+const badgeStyle = {
+  display: "inline-flex",
+  alignItems: "center",
+  padding: "2px 8px",
+  borderRadius: 3,
+  fontSize: 10,
+  fontFamily: "JetBrains Mono, monospace",
+  fontWeight: 700,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  border: "1px solid",
+};
+const badgeGold = {
+  background: "rgba(201,168,76,0.12)",
+  color: "#c9a84c",
+  borderColor: "rgba(201,168,76,0.3)",
+};
+const badgeGreen = {
+  background: "rgba(134,239,172,0.08)",
+  color: "#86efac",
+  borderColor: "rgba(134,239,172,0.25)",
+};
+const badgeSlate = {
+  background: "rgba(148,163,184,0.06)",
+  color: "#64748b",
+  borderColor: "rgba(148,163,184,0.15)",
+};
+
+function btnStyle(variant, color, bg) {
+  const base = {
+    padding: "8px 16px",
+    borderRadius: 6,
+    fontFamily: "JetBrains Mono, monospace",
+    fontWeight: 700,
+    fontSize: 12,
+    letterSpacing: "0.05em",
+    cursor: "pointer",
+    border: "1px solid",
+    transition: "all 0.15s",
+  };
+  if (variant === "primary")
+    return {
+      ...base,
+      background: "#c9a84c",
+      color: "#0a0a0f",
+      borderColor: "#c9a84c",
+    };
+  if (variant === "danger")
+    return {
+      ...base,
+      background: "#7f1d1d",
+      color: "#fca5a5",
+      borderColor: "#991b1b",
+    };
+  return {
+    ...base,
+    background: bg || "transparent",
+    color: color || "#94a3b8",
+    borderColor: "rgba(255,255,255,0.1)",
+  };
 }
 
 // ─── ROOT ────────────────────────────────────────────────────────────────────
